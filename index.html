@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#12181a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Steady</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="lockscreen" class="lockscreen hidden">
+  <div class="lock-brand">Steady</div>
+  <div class="pin-dots" id="pinDots" aria-hidden="true">
+    <span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span>
+  </div>
+  <input id="pinInput" class="pin-hidden-input" type="tel" inputmode="numeric" maxlength="6" autocomplete="off" aria-label="Enter PIN">
+  <div class="pin-err" id="pinErr" role="alert"></div>
+</div>
+
+<div id="modalOverlay" class="modal-overlay hidden" onclick="if(event.target===this) closeModal()">
+  <div class="modal-box" id="modalBox" role="dialog" aria-modal="true"></div>
+</div>
+
+<canvas id="confettiCanvas" class="hidden"></canvas>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<header class="top">
+  <div class="brand">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11Z" stroke="#8fae8b" stroke-width="1.6" stroke-linejoin="round"/></svg>
+    Steady
+  </div>
+  <button class="lock" id="lockBtn" aria-label="Menu">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/></svg>
+  </button>
+</header>
+
+<!-- TODAY -->
+<section id="view-today" class="wrap">
+  <div class="ring-wrap">
+    <div class="ring">
+      <svg width="220" height="220">
+        <circle cx="110" cy="110" r="108.5" fill="none" stroke="#232c2e" stroke-width="3"/>
+        <circle id="ringProgress" cx="110" cy="110" r="108.5" fill="none" stroke="#8fae8b" stroke-width="3" stroke-linecap="round"/>
+      </svg>
+      <div class="ring-center">
+        <span class="num" id="dayCount">0</span>
+        <span class="lbl" id="dayLbl">days</span>
+      </div>
+    </div>
+    <div class="sub">
+      <div class="l1" id="sinceLine">since —</div>
+      <div class="l2" id="nextMilestone"></div>
+    </div>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat-card">
+      <svg class="ic" viewBox="0 0 24 24" fill="none"><path d="M12 20V10M12 10l5 5M12 10l-5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 4h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      <div class="val" id="longestVal">0d</div><div class="lbl">LONGEST STREAK</div>
+    </div>
+    <div class="stat-card">
+      <svg class="ic" viewBox="0 0 24 24" fill="none"><path d="M3 12a9 9 0 1 1 3 6.7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M3 17v-4h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div class="val" id="resetsVal">0</div><div class="lbl">TOTAL RESETS</div>
+    </div>
+  </div>
+
+  <div class="checkin-card">
+    <div class="checkin-head">
+      <span class="t">QUICK CHECK-IN</span>
+      <span class="streak-note" id="checkinHint">how are you feeling right now?</span>
+    </div>
+    <div class="mood-row" id="moodRow"></div>
+    <div class="checkin-confirm" id="checkinConfirm"></div>
+  </div>
+
+  <div class="quote-box" id="quoteBox"></div>
+
+  <div class="actions">
+    <button class="btn-card" onclick="go('log')">
+      <span class="ic-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span>
+      Write a longer note
+      <span class="chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+    </button>
+    <button class="btn-card" onclick="go('sos')">
+      <span class="ic-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 18c0-5 2-9 3-9s2 6 3 6 1-3 2-3 1.5 2 2 2 1-1 2-1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.4" opacity=".4"/></svg></span>
+      I'm having an urge — ride it out
+      <span class="chevron"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+    </button>
+    <button class="btn-danger btn-card" id="resetToggleBtn" onclick="toggleResetPanel()">
+      <span class="ic-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 12a9 9 0 1 1 2.6 6.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M3 8v5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      I slipped — reset the count
+    </button>
+    <button class="btn-card" onclick="shareStreak()">
+      <span class="ic-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="18" cy="5" r="2.3" stroke="currentColor" stroke-width="1.6"/><circle cx="6" cy="12" r="2.3" stroke="currentColor" stroke-width="1.6"/><circle cx="18" cy="19" r="2.3" stroke="currentColor" stroke-width="1.6"/><path d="M8.1 10.8l7.8-4.4M8.1 13.2l7.8 4.4" stroke="currentColor" stroke-width="1.6"/></svg></span>
+      Share your streak
+    </button>
+  </div>
+
+  <div id="resetPanel" class="panel hidden">
+    <p id="resetPrompt">No judgment here — a reset is just data.</p>
+    <div class="tags" id="triggerTags"></div>
+    <textarea id="resetNote" rows="3" placeholder="Optional note…"></textarea>
+    <div class="row-btns">
+      <button class="btn-rust" onclick="confirmReset()">Confirm reset</button>
+      <button class="btn-ghost" onclick="toggleResetPanel()">Cancel</button>
+    </div>
+  </div>
+
+  <footer class="disclaimer">This is a private, on-device tool — not a substitute for a therapist or counselor if you want extra support.</footer>
+</section>
+
+<!-- SOS -->
+<section id="view-sos" class="wrap hidden">
+  <h2 class="page-title">Ride it out</h2>
+  <p class="page-sub">Urges peak and pass, usually within a few minutes. Breathe with the circle.</p>
+  <div class="sos-wrap">
+    <div class="breath-circle" id="breathCircle" role="button" tabindex="0" aria-label="Start breathing exercise" aria-pressed="false"><span id="breathLabel">tap to begin</span></div>
+    <div class="sos-timer" id="sosTimer">0:00 elapsed</div>
+    <div class="row-btns" style="margin-top:20px;width:220px;">
+      <button class="btn-primary" id="sosToggle" onclick="toggleBreathing()">Start</button>
+    </div>
+  </div>
+  <div class="why-box" id="sosWhyBox" style="margin-top:28px;"></div>
+</section>
+
+<!-- LOG (journal + trigger picker) -->
+<section id="view-log" class="wrap hidden">
+  <h2 class="page-title">How's it going right now</h2>
+  <p class="page-sub" id="logPrompt"></p>
+  <div class="tags" id="logTriggerTags"></div>
+  <textarea id="logNote" rows="7" placeholder="Write freely — this stays on this device."></textarea>
+  <div class="row-btns">
+    <button class="btn-primary" id="saveNoteBtn" onclick="saveNote()">Save note</button>
+    <button class="btn-ghost" onclick="go('today')">✕</button>
+  </div>
+</section>
+
+<!-- HISTORY -->
+<section id="view-history" class="wrap hidden">
+  <h2 class="page-title">History</h2>
+  <div class="cal-head">
+    <button onclick="shiftMonth(-1)" aria-label="Previous month">‹</button>
+    <span id="calLabel"></span>
+    <button onclick="shiftMonth(1)" aria-label="Next month">›</button>
+  </div>
+  <div class="cal-grid" id="calGrid"></div>
+
+  <h2 class="page-title" style="font-size:15px;color:var(--muted);margin-top:28px;">YEAR OVERVIEW</h2>
+  <div class="heatmap-scroll"><div class="heatmap-grid" id="heatmapGrid"></div></div>
+  <div class="heatmap-legend">
+    <span>Less</span>
+    <span class="hm-cell hm-0"></span><span class="hm-cell hm-1"></span><span class="hm-cell hm-2"></span><span class="hm-cell hm-r"></span>
+    <span>More / Reset</span>
+  </div>
+
+  <h2 class="page-title" style="font-size:15px;color:var(--muted);">COMMON TRIGGERS</h2>
+  <div class="chart-wrap"><canvas id="triggerChart"></canvas></div>
+
+  <h2 class="page-title" style="font-size:15px;color:var(--muted);">ENTRIES</h2>
+  <div id="entryList"></div>
+  <button class="btn-ghost" id="loadMoreBtn" style="width:100%;margin-top:6px;" onclick="loadMoreEntries()">Show more</button>
+</section>
+
+<!-- SETTINGS / WHY -->
+<section id="view-settings" class="wrap hidden">
+  <h2 class="page-title">My why</h2>
+  <p class="page-sub">Write down your reasons. Reread them when it's hard.</p>
+  <div class="why-box"><textarea id="whyText" rows="5" placeholder="Why does this matter to you?"></textarea></div>
+
+  <h2 class="page-title">Settings</h2>
+  <div class="setting-row" id="installRow" style="display:none;cursor:pointer;border-color:var(--sage);" onclick="triggerInstall()">
+    <span>Install app to home screen</span><span>⭳</span>
+  </div>
+  <div class="setting-row">
+    <div>
+      <div>Daily check-in reminder</div>
+      <div class="setting-note">Only fires while the app is open — mobile browsers don't allow reliable background reminders without a server.</div>
+    </div>
+    <button class="switch" id="reminderSwitch" onclick="toggleReminder()"></button>
+  </div>
+  <div class="setting-row">
+    <span>App lock (PIN)</span>
+    <button class="switch" id="pinSwitch" onclick="togglePinSetting()"></button>
+  </div>
+  <div class="setting-row" style="cursor:pointer;" onclick="exportData()">
+    <span>Export backup (.json)</span><span>↓</span>
+  </div>
+  <div class="setting-row" style="cursor:pointer;" onclick="document.getElementById('importFile').click()">
+    <span>Import backup</span><span>↑</span>
+  </div>
+  <input type="file" id="importFile" accept="application/json" class="hidden" onchange="importData(event)">
+  <div class="setting-row" style="cursor:pointer;border-color:var(--border-warn);" onclick="wipeData()">
+    <span style="color:var(--rust);">Erase all data</span><span>⚠</span>
+  </div>
+</section>
+
+<nav class="bottom">
+  <button data-v="today" onclick="go('today')">
+    <span class="dot"></span>
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.5A8.5 8.5 0 0 1 20.5 12" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+    <div>Today</div>
+  </button>
+  <button data-v="sos" onclick="go('sos')">
+    <span class="dot"></span>
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M6 18c0-5 2-9 3-9s2 6 3 6 1-3 2-3 1.5 2 2 2 1-1 2-1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.3" opacity=".4"/></svg>
+    <div>SOS</div>
+  </button>
+  <button data-v="log" onclick="go('log')">
+    <span class="dot"></span>
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+    <div>Log</div>
+  </button>
+  <button data-v="history" onclick="go('history')">
+    <span class="dot"></span>
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="4" y="5" width="16" height="15" rx="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M4 9.5h16M8 3v3.5M16 3v3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <div>History</div>
+  </button>
+  <button data-v="settings" onclick="go('settings')">
+    <span class="dot"></span>
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v2.2M12 18.8V21M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M3 12h2.2M18.8 12H21M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <div>Settings</div>
+  </button>
+</nav>
+
+<script src="app.js" defer></script>
+</body>
+</html>
