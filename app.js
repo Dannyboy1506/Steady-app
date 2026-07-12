@@ -1,5 +1,6 @@
 const DAY = 86400000;
 const MILESTONES = [1,3,7,14,21,30,60,90,180,365];
+const GRACE_COOLDOWN_DAYS = 7; // one grace day earnable per rolling week
 const TRIGGERS = ["Boredom","Stress","Loneliness","Phone in bed","Late night","After scrolling","Anxiety","Habit/autopilot","Tiredness"];
 const PROMPTS = [
   "What were you feeling right before?",
@@ -65,6 +66,12 @@ const Store = {
     state.startDate = Date.now();
     save();
   },
+  useGraceDay(note, triggers){
+    // Streak continues uninterrupted — startDate is NOT touched. Logged
+    // separately from a hard reset so it still shows up as real data.
+    state.history.unshift({date:Date.now(), type:'grace', text:note, triggers:[...triggers], streakLength:streakDays()});
+    save();
+  },
   addNote(text, triggers){
     state.history.unshift({date:Date.now(), type:'note', text, triggers:[...triggers], streakLength:streakDays()});
     save();
@@ -93,7 +100,13 @@ const Store = {
 function todayKey(ts){ const d=new Date(ts); d.setHours(0,0,0,0); return d.toISOString().slice(0,10); }
 function fmtLong(ts){ return new Date(ts).toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'}); }
 
-function streakDays(){ return Math.floor((Date.now()-state.startDate)/DAY); }
+function streakDays(){
+  // Calendar-day diff, not raw ms — a DST shift or timezone change would
+  // otherwise flip the streak an hour early/late or skip a day entirely.
+  const start = new Date(state.startDate); start.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0,0,0,0);
+  return Math.round((today.getTime() - start.getTime()) / DAY);
+}
 function nextMilestone(d){ return MILESTONES.find(m=>m>d) ?? null; }
 function prevMilestone(d){ const arr=[...MILESTONES].reverse(); return arr.find(m=>m<=d) ?? 0; }
 
@@ -125,6 +138,7 @@ function renderToday(){
   if(d > state.longest){ Store.bumpLongest(d); }
   document.getElementById('longestVal').textContent = state.longest + 'd';
   document.getElementById('resetsVal').textContent = state.history.filter(h=>h.type==='reset').length;
+  renderGraceStatus();
 
   document.getElementById('quoteBox').textContent = '"' + QUOTES[new Date().getDate() % QUOTES.length] + '"';
   renderMoodRow();
@@ -146,11 +160,17 @@ function moodFaceSvg(m, selected){
 }
 function renderMoodRow(){
   const row=document.getElementById('moodRow');
+  row.setAttribute('role','radiogroup');
+  row.setAttribute('aria-label','How are you feeling right now');
   row.innerHTML='';
   const todayEntry = state.history.find(h=>h.type==='checkin' && todayKey(h.date)===todayKey(Date.now()));
   MOODS.forEach(m=>{
+    const isSelected = !!(todayEntry && todayEntry.mood===m.id);
     const btn=document.createElement('button');
-    btn.className='mood-btn'+(todayEntry && todayEntry.mood===m.id ? ' today-pick':'');
+    btn.className='mood-btn'+(isSelected ? ' today-pick':'');
+    btn.setAttribute('role','radio');
+    btn.setAttribute('aria-checked', String(isSelected));
+    btn.setAttribute('aria-label', m.label);
     btn.innerHTML = moodFaceSvg(m) + `<span class="lbl">${m.label}</span>`;
     btn.onclick=()=>quickCheckin(m, btn);
     row.appendChild(btn);
@@ -240,6 +260,24 @@ function buildTags(container, selArrRef, onToggle){
   });
 }
 
+/* ---- Grace days: one non-punitive "pause" per rolling week ---- */
+function graceInfo(){
+  const graceEntries = state.history.filter(h=>h.type==='grace');
+  if(graceEntries.length===0) return { available:true, nextInDays:0 };
+  const lastGrace = graceEntries[0].date; // history is newest-first
+  const elapsedDays = (Date.now()-lastGrace)/DAY;
+  if(elapsedDays >= GRACE_COOLDOWN_DAYS) return { available:true, nextInDays:0 };
+  return { available:false, nextInDays: Math.ceil(GRACE_COOLDOWN_DAYS-elapsedDays) };
+}
+function renderGraceStatus(){
+  const el=document.getElementById('graceStatus');
+  const g=graceInfo();
+  el.className='grace-status'+(g.available?'':' unavailable');
+  el.innerHTML = g.available
+    ? '🛡️ A grace day is available — if you slip, you can use it to keep your streak going.'
+    : `🛡️ Grace day used recently — next one available in ${g.nextInDays} day${g.nextInDays===1?'':'s'}.`;
+}
+
 function toggleResetPanel(){
   const p=document.getElementById('resetPanel');
   p.classList.toggle('hidden');
@@ -247,7 +285,24 @@ function toggleResetPanel(){
     document.getElementById('resetPrompt').textContent = "No judgment here — a reset is just data. " + PROMPTS[Math.floor(Math.random()*PROMPTS.length)];
     selectedTriggers=[];
     buildTags(document.getElementById('triggerTags'), selectedTriggers, {sel:selectedTriggers});
+    const g=graceInfo();
+    const opt=document.getElementById('graceOption');
+    opt.innerHTML = g.available
+      ? `<div class="avail">
+          <p>You have a grace day available. Using it logs this honestly, but keeps your ${streakDays()}-day streak going instead of resetting to zero.</p>
+          <button class="btn-gold" onclick="useGraceDay()">Use grace day — keep my streak</button>
+        </div>`
+      : `<div class="unavail">Grace day already used this week — next one in ${g.nextInDays} day${g.nextInDays===1?'':'s'}.</div>`;
   }
+}
+
+function useGraceDay(){
+  const note = document.getElementById('resetNote').value.trim();
+  Store.useGraceDay(note, selectedTriggers);
+  document.getElementById('resetNote').value='';
+  toggleResetPanel();
+  renderToday();
+  toast('Grace day used — streak continues. Be gentle with yourself.');
 }
 
 function confirmReset(){
@@ -295,6 +350,7 @@ function renderCalendar(){
   const resetDays=new Set(state.history.filter(h=>h.type==='reset').map(h=>todayKey(h.date)));
   const noteDays=new Set(state.history.filter(h=>h.type==='note').map(h=>todayKey(h.date)));
   const checkinDays=new Set(state.history.filter(h=>h.type==='checkin').map(h=>todayKey(h.date)));
+  const graceDays=new Set(state.history.filter(h=>h.type==='grace').map(h=>todayKey(h.date)));
   const streakStartKey=todayKey(state.startDate);
   for(let i=0;i<startWd;i++){ grid.appendChild(document.createElement('div')); }
   for(let d=1; d<=daysIn; d++){
@@ -305,6 +361,7 @@ function renderCalendar(){
     else if(key>=streakStartKey && dt<=new Date()) cls+=' streak';
     if(noteDays.has(key) && !resetDays.has(key)) cls+=' note';
     if(checkinDays.has(key) && !resetDays.has(key)) cls+=' checkin';
+    if(graceDays.has(key) && !resetDays.has(key)) cls+=' grace';
     cell.className=cls;
     cell.textContent=d;
     grid.appendChild(cell);
@@ -329,6 +386,7 @@ function renderEntries(){
     let kindLabel = 'Note';
     if(h.type==='reset') kindLabel = `Reset · ${h.streakLength}d streak ended`;
     if(h.type==='checkin') kindLabel = `Check-in · ${MOODS.find(m=>m.id===h.mood)?.label || h.mood}`;
+    if(h.type==='grace') kindLabel = `Grace day used · streak continued at ${h.streakLength}d`;
     el.innerHTML = `
       <div class="row">
         <span class="kind">${kindLabel}</span>
@@ -384,9 +442,9 @@ function renderHeatmap(){
   grid.innerHTML='';
   const days=180; // ~6 months, keeps it scrollable but not huge
   const resetSet=new Set(state.history.filter(h=>h.type==='reset').map(h=>todayKey(h.date)));
-  const activitySet={}; // key -> count of notes/checkins that day
+  const activitySet={}; // key -> count of notes/checkins/grace that day
   state.history.forEach(h=>{
-    if(h.type==='note'||h.type==='checkin'){
+    if(h.type==='note'||h.type==='checkin'||h.type==='grace'){
       const k=todayKey(h.date);
       activitySet[k]=(activitySet[k]||0)+1;
     }
@@ -507,6 +565,9 @@ function runBreathCycle(){
 
 /* ---- Navigation ---- */
 function go(view){
+  if(currentView==='sos' && view!=='sos' && breathing){
+    toggleBreathing(); // stops timers, resets circle/label/aria state cleanly
+  }
   currentView=view;
   history.replaceState(null,'','#'+view);
   ['today','sos','log','history','settings'].forEach(v=>{
@@ -683,7 +744,11 @@ function checkLock(){
     document.getElementById('lockscreen').classList.remove('hidden');
     const input=document.getElementById('pinInput');
     input.value=''; updatePinDots(0);
+    // Chrome on Android generally won't open the keyboard for a focus()
+    // call that isn't a direct result of a tap, so we focus on load AND
+    // re-focus on every tap of the lockscreen as a fallback.
     input.focus();
+    document.getElementById('lockscreen').onclick=()=>input.focus();
     input.oninput=async ()=>{
       const v=input.value.replace(/\D/g,'').slice(0,6);
       input.value=v;

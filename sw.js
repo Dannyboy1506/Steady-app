@@ -1,4 +1,7 @@
-const CACHE = "steady-v3";
+// Bump CACHE_VERSION any time index.html, styles.css, or app.js changes —
+// this is what forces installed clients to drop the stale cache and refetch.
+const CACHE_VERSION = "v5";
+const CACHE = `steady-${CACHE_VERSION}`;
 const ASSETS = [
   "./",
   "./index.html",

@@ -17,10 +17,12 @@
 
 <div id="lockscreen" class="lockscreen hidden">
   <div class="lock-brand">Steady</div>
-  <div class="pin-dots" id="pinDots" aria-hidden="true">
-    <span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span>
+  <div class="pin-input-wrap">
+    <div class="pin-dots" id="pinDots" aria-hidden="true">
+      <span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span><span class="pin-dot"></span>
+    </div>
+    <input id="pinInput" class="pin-real-input" type="tel" inputmode="numeric" maxlength="6" autocomplete="off" aria-label="Enter PIN">
   </div>
-  <input id="pinInput" class="pin-hidden-input" type="tel" inputmode="numeric" maxlength="6" autocomplete="off" aria-label="Enter PIN">
   <div class="pin-err" id="pinErr" role="alert"></div>
 </div>
 
@@ -71,6 +73,8 @@
     </div>
   </div>
 
+  <div class="grace-status" id="graceStatus"></div>
+
   <div class="checkin-card">
     <div class="checkin-head">
       <span class="t">QUICK CHECK-IN</span>
@@ -107,6 +111,7 @@
     <p id="resetPrompt">No judgment here — a reset is just data.</p>
     <div class="tags" id="triggerTags"></div>
     <textarea id="resetNote" rows="3" placeholder="Optional note…"></textarea>
+    <div id="graceOption"></div>
     <div class="row-btns">
       <button class="btn-rust" onclick="confirmReset()">Confirm reset</button>
       <button class="btn-ghost" onclick="toggleResetPanel()">Cancel</button>
@@ -121,7 +126,7 @@
   <h2 class="page-title">Ride it out</h2>
   <p class="page-sub">Urges peak and pass, usually within a few minutes. Breathe with the circle.</p>
   <div class="sos-wrap">
-    <div class="breath-circle" id="breathCircle" role="button" tabindex="0" aria-label="Start breathing exercise" aria-pressed="false"><span id="breathLabel">tap to begin</span></div>
+    <div class="breath-circle" id="breathCircle" role="button" tabindex="0" aria-label="Start breathing exercise" aria-pressed="false"><span id="breathLabel" aria-live="polite">tap to begin</span></div>
     <div class="sos-timer" id="sosTimer">0:00 elapsed</div>
     <div class="row-btns" style="margin-top:20px;width:220px;">
       <button class="btn-primary" id="sosToggle" onclick="toggleBreathing()">Start</button>
