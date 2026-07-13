@@ -41,14 +41,58 @@ let entriesShown = 15;
 const ENTRY_PAGE = 15;
 let deferredInstallPrompt = null;
 
-function load(){
+/* ---- Storage: IndexedDB is primary (survives Safari's ~7-day localStorage
+   eviction for unvisited sites); localStorage is kept as a same-tick fallback
+   so the app still works instantly and in browsers without IndexedDB. ---- */
+const DB = {
+  async open(){
+    return new Promise((res,rej)=>{
+      if(!('indexedDB' in window)) return rej(new Error('no indexeddb'));
+      const r = indexedDB.open('steady-db', 1);
+      r.onerror = () => rej(r.error);
+      r.onsuccess = () => res(r.result);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    });
+  },
+  async get(key){
+    const db = await this.open();
+    return new Promise((res,rej)=>{
+      const tx = db.transaction('kv','readonly');
+      const req = tx.objectStore('kv').get(key);
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => rej(req.error);
+    });
+  },
+  async set(key, value){
+    const db = await this.open();
+    return new Promise((res,rej)=>{
+      const tx = db.transaction('kv','readwrite');
+      const req = tx.objectStore('kv').put(value, key);
+      req.onsuccess = () => res();
+      req.onerror = () => rej(req.error);
+    });
+  }
+};
+
+async function load(){
+  // Fast path: localStorage, so first paint isn't blocked on IndexedDB.
   try{
     const raw = localStorage.getItem('steady-state');
     if(raw) state = Object.assign(state, JSON.parse(raw));
   }catch(e){}
+  // IndexedDB is the source of truth if it has newer/different data —
+  // relevant right after Safari has quietly wiped localStorage.
+  try{
+    const idbState = await DB.get('steady-state');
+    if(idbState) state = Object.assign(state, idbState);
+  }catch(e){ /* IndexedDB unavailable — localStorage-only is still fine */ }
+  // Ask the browser not to evict our storage under pressure. Best-effort;
+  // unsupported or denied silently, no functional impact either way.
+  try{ await navigator.storage?.persist?.(); }catch(e){}
 }
 function save(){
   try{ localStorage.setItem('steady-state', JSON.stringify(state)); }catch(e){}
+  try{ DB.set('steady-state', state); }catch(e){}
 }
 
 /* ---- PIN hashing (Web Crypto, SHA-256) — never store a plaintext PIN ---- */
@@ -83,7 +127,8 @@ const Store = {
     if(idx>-1) state.history[idx]=entry; else state.history.unshift(entry);
     save();
   },
-  deleteEntry(i){ state.history.splice(i,1); save(); },
+  deleteEntry(i){ const [removed]=state.history.splice(i,1); save(); return removed; },
+  restoreEntry(i, entry){ state.history.splice(i,0,entry); save(); },
   setWhy(text){ state.why = text; save(); },
   bumpLongest(d){ if(d > state.longest){ state.longest = d; save(); } },
   setReminder(on){ state.reminderOn = on; save(); },
@@ -110,12 +155,22 @@ function streakDays(){
 function nextMilestone(d){ return MILESTONES.find(m=>m>d) ?? null; }
 function prevMilestone(d){ const arr=[...MILESTONES].reverse(); return arr.find(m=>m<=d) ?? 0; }
 
-function toast(msg){
+function toast(msg, action){
   const t=document.getElementById('toast');
-  t.textContent=msg;
-  t.style.display='block';
+  t.innerHTML='';
+  const span=document.createElement('span');
+  span.textContent=msg;
+  t.appendChild(span);
+  if(action){
+    const btn=document.createElement('button');
+    btn.textContent=action.label;
+    btn.className='toast-action';
+    btn.onclick=()=>{ action.onClick(); t.style.display='none'; clearTimeout(t._timer); };
+    t.appendChild(btn);
+  }
+  t.style.display='flex';
   clearTimeout(t._timer);
-  t._timer=setTimeout(()=>{t.style.display='none';},2600);
+  t._timer=setTimeout(()=>{t.style.display='none';}, action ? 5000 : 2600);
 }
 
 function renderToday(){
@@ -164,17 +219,34 @@ function renderMoodRow(){
   row.setAttribute('aria-label','How are you feeling right now');
   row.innerHTML='';
   const todayEntry = state.history.find(h=>h.type==='checkin' && todayKey(h.date)===todayKey(Date.now()));
-  MOODS.forEach(m=>{
+  MOODS.forEach((m,i)=>{
     const isSelected = !!(todayEntry && todayEntry.mood===m.id);
     const btn=document.createElement('button');
     btn.className='mood-btn'+(isSelected ? ' today-pick':'');
     btn.setAttribute('role','radio');
     btn.setAttribute('aria-checked', String(isSelected));
     btn.setAttribute('aria-label', m.label);
+    btn.tabIndex = i===0 ? 0 : -1; // roving tabindex: one stop in tab order, arrows move within
     btn.innerHTML = moodFaceSvg(m) + `<span class="lbl">${m.label}</span>`;
     btn.onclick=()=>quickCheckin(m, btn);
     row.appendChild(btn);
   });
+  row.onkeydown = (e) => {
+    const buttons = Array.from(row.querySelectorAll('.mood-btn'));
+    const idx = buttons.indexOf(document.activeElement);
+    if(idx===-1) return;
+    let next=null;
+    if(e.key==='ArrowRight' || e.key==='ArrowDown') next = buttons[(idx+1)%buttons.length];
+    else if(e.key==='ArrowLeft' || e.key==='ArrowUp') next = buttons[(idx-1+buttons.length)%buttons.length];
+    else if(e.key==='Home') next = buttons[0];
+    else if(e.key==='End') next = buttons[buttons.length-1];
+    if(next){
+      e.preventDefault();
+      buttons.forEach(b=>b.tabIndex=-1);
+      next.tabIndex=0;
+      next.focus();
+    }
+  };
   document.getElementById('checkinHint').textContent = todayEntry
     ? `checked in: ${MOODS.find(x=>x.id===todayEntry.mood)?.label.toLowerCase()}`
     : 'how are you feeling right now?';
@@ -245,16 +317,17 @@ function burstConfetti(){
   tick();
 }
 
-function buildTags(container, selArrRef, onToggle){
+function buildTags(container, sel){
   container.innerHTML='';
   TRIGGERS.forEach(t=>{
     const el=document.createElement('button');
-    el.className='tag'+(onToggle.sel.includes(t)?' on':'');
+    el.className='tag'+(sel.includes(t)?' on':'');
     el.textContent=t;
+    el.setAttribute('aria-pressed', String(sel.includes(t)));
     el.onclick=()=>{
-      const i=onToggle.sel.indexOf(t);
-      if(i>-1) onToggle.sel.splice(i,1); else onToggle.sel.push(t);
-      buildTags(container, selArrRef, onToggle);
+      const i=sel.indexOf(t);
+      if(i>-1) sel.splice(i,1); else sel.push(t);
+      buildTags(container, sel);
     };
     container.appendChild(el);
   });
@@ -284,7 +357,7 @@ function toggleResetPanel(){
   if(!p.classList.contains('hidden')){
     document.getElementById('resetPrompt').textContent = "No judgment here — a reset is just data. " + PROMPTS[Math.floor(Math.random()*PROMPTS.length)];
     selectedTriggers=[];
-    buildTags(document.getElementById('triggerTags'), selectedTriggers, {sel:selectedTriggers});
+    buildTags(document.getElementById('triggerTags'), selectedTriggers);
     const g=graceInfo();
     const opt=document.getElementById('graceOption');
     opt.innerHTML = g.available
@@ -314,16 +387,28 @@ function confirmReset(){
   toast('Logged. Fresh count started — you\'ve got this.');
 }
 
+let hasUnsavedNote = false;
 function saveNote(){
   const txt=document.getElementById('logNote').value.trim();
   if(!txt) return;
   Store.addNote(txt, selectedLogTriggers);
   document.getElementById('logNote').value='';
   selectedLogTriggers.length=0;
-  buildTags(document.getElementById('logTriggerTags'), selectedLogTriggers, {sel:selectedLogTriggers});
+  buildTags(document.getElementById('logTriggerTags'), selectedLogTriggers);
+  hasUnsavedNote = false;
   toast('Note saved.');
   go('today');
 }
+
+document.getElementById('logNote')?.addEventListener('input', e=>{
+  hasUnsavedNote = e.target.value.trim().length > 0;
+});
+window.addEventListener('beforeunload', (e)=>{
+  if(hasUnsavedNote && currentView==='log'){
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 function checkMilestone(){
   const d=streakDays();
@@ -351,17 +436,20 @@ function renderCalendar(){
   const noteDays=new Set(state.history.filter(h=>h.type==='note').map(h=>todayKey(h.date)));
   const checkinDays=new Set(state.history.filter(h=>h.type==='checkin').map(h=>todayKey(h.date)));
   const graceDays=new Set(state.history.filter(h=>h.type==='grace').map(h=>todayKey(h.date)));
-  const streakStartKey=todayKey(state.startDate);
+  const streakStart=new Date(state.startDate); streakStart.setHours(0,0,0,0);
+  const todayMidnight=new Date(); todayMidnight.setHours(0,0,0,0);
+  const todayK=todayKey(Date.now());
   for(let i=0;i<startWd;i++){ grid.appendChild(document.createElement('div')); }
   for(let d=1; d<=daysIn; d++){
-    const dt=new Date(y,m,d); const key=todayKey(dt.getTime());
+    const dt=new Date(y,m,d); dt.setHours(0,0,0,0); const key=todayKey(dt.getTime());
     const cell=document.createElement('div');
     let cls='cal-cell';
     if(resetDays.has(key)) cls+=' reset';
-    else if(key>=streakStartKey && dt<=new Date()) cls+=' streak';
+    else if(dt.getTime()>=streakStart.getTime() && dt.getTime()<=todayMidnight.getTime()) cls+=' streak';
     if(noteDays.has(key) && !resetDays.has(key)) cls+=' note';
     if(checkinDays.has(key) && !resetDays.has(key)) cls+=' checkin';
     if(graceDays.has(key) && !resetDays.has(key)) cls+=' grace';
+    if(key===todayK) cls+=' today';
     cell.className=cls;
     cell.textContent=d;
     grid.appendChild(cell);
@@ -401,7 +489,16 @@ function renderEntries(){
   loadMoreBtn.classList.toggle('hidden', entriesShown >= state.history.length);
 }
 function loadMoreEntries(){ entriesShown += ENTRY_PAGE; renderEntries(); }
-function deleteEntry(i){ Store.deleteEntry(i); renderHistoryView(); }
+function deleteEntry(i){
+  const removed = Store.deleteEntry(i);
+  renderHistoryView();
+  if(removed){
+    toast('Entry deleted.', {
+      label:'Undo',
+      onClick:()=>{ Store.restoreEntry(i, removed); renderHistoryView(); }
+    });
+  }
+}
 function escapeHtml(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 
 function renderTriggerChart(){
@@ -442,34 +539,53 @@ function renderHeatmap(){
   grid.innerHTML='';
   const days=180; // ~6 months, keeps it scrollable but not huge
   const resetSet=new Set(state.history.filter(h=>h.type==='reset').map(h=>todayKey(h.date)));
-  const activitySet={}; // key -> count of notes/checkins/grace that day
+  const activitySet={}; // key -> total count of notes/checkins/grace that day
+  const detail={}; // key -> {checkins, notes, grace}
   state.history.forEach(h=>{
     if(h.type==='note'||h.type==='checkin'||h.type==='grace'){
       const k=todayKey(h.date);
       activitySet[k]=(activitySet[k]||0)+1;
+      if(!detail[k]) detail[k]={checkins:0,notes:0,grace:0};
+      if(h.type==='checkin') detail[k].checkins++;
+      if(h.type==='note') detail[k].notes++;
+      if(h.type==='grace') detail[k].grace++;
     }
   });
-  const streakStartKey=todayKey(state.startDate);
+  const streakStart=new Date(state.startDate); streakStart.setHours(0,0,0,0);
+  const todayMidnight=new Date(); todayMidnight.setHours(0,0,0,0);
   const start=new Date(); start.setHours(0,0,0,0); start.setDate(start.getDate()-(days-1));
   // pad to start on Sunday so weeks align into 7-row columns
   const lead=start.getDay();
   for(let i=0;i<lead;i++){ const c=document.createElement('div'); c.className='hm-cell hm-0'; grid.appendChild(c); }
   for(let i=0;i<days;i++){
-    const dt=new Date(start); dt.setDate(start.getDate()+i);
+    const dt=new Date(start); dt.setDate(start.getDate()+i); dt.setHours(0,0,0,0);
     const key=todayKey(dt.getTime());
     let cls='hm-cell ';
-    if(resetSet.has(key)) cls+='hm-r';
-    else{
+    let tooltip=key;
+    if(resetSet.has(key)){
+      cls+='hm-r';
+      tooltip=`${key} — reset day`;
+    } else{
       const count=activitySet[key]||0;
-      const inStreak = key>=streakStartKey && dt<=new Date();
+      const inStreak = dt.getTime()>=streakStart.getTime() && dt.getTime()<=todayMidnight.getTime();
       if(count>=2) cls+='hm-3';
       else if(count===1) cls+='hm-2';
       else if(inStreak) cls+='hm-1';
       else cls+='hm-0';
+      if(count>0){
+        const d=detail[key];
+        const parts=[];
+        if(d.checkins) parts.push(`${d.checkins} check-in${d.checkins===1?'':'s'}`);
+        if(d.notes) parts.push(`${d.notes} note${d.notes===1?'':'s'}`);
+        if(d.grace) parts.push(`${d.grace} grace day${d.grace===1?'':'s'}`);
+        tooltip=`${key} — ${parts.join(', ')}`;
+      } else if(inStreak){
+        tooltip=`${key} — streak day, no log`;
+      }
     }
     const cell=document.createElement('div');
     cell.className=cls;
-    cell.title=key;
+    cell.title=tooltip;
     grid.appendChild(cell);
   }
   requestAnimationFrame(()=>{ const sc=grid.parentElement; sc.scrollLeft=sc.scrollWidth; });
@@ -581,7 +697,7 @@ function go(view){
   if(view==='log'){
     document.getElementById('logPrompt').textContent = PROMPTS[Math.floor(Math.random()*PROMPTS.length)];
     selectedLogTriggers.length=0;
-    buildTags(document.getElementById('logTriggerTags'), selectedLogTriggers, {sel:selectedLogTriggers});
+    buildTags(document.getElementById('logTriggerTags'), selectedLogTriggers);
   }
   if(view==='sos'){
     document.getElementById('sosWhyBox').innerHTML = state.why
@@ -613,13 +729,16 @@ function toggleReminder(){
     });
   } else {
     Store.setReminder(false);
+    clearTimeout(reminderTimeout);
     document.getElementById('reminderSwitch').classList.remove('on');
   }
 }
+let reminderTimeout = null;
 function scheduleReminder(){
+  clearTimeout(reminderTimeout);
   if(!state.reminderOn) return;
   // Best-effort: only fires while app/tab is alive, since background push needs a server.
-  setTimeout(()=>{
+  reminderTimeout = setTimeout(()=>{
     if(state.reminderOn && Notification.permission==='granted'){
       new Notification('Steady', {body:'Quick check-in — how are you doing today?', icon:'icons/icon-192.png'});
     }
@@ -692,13 +811,32 @@ function exportData(){
   URL.revokeObjectURL(url);
   toast('Backup downloaded.');
 }
+function sanitizeState(data){
+  const clean = (s) => typeof s==='string' ? s.replace(/[<>]/g,'') : s;
+  const knownTypes = new Set(['reset','note','checkin','grace']);
+  if(typeof data.why === 'string') data.why = clean(data.why);
+  if(Array.isArray(data.history)){
+    data.history = data.history
+      .filter(h => h && knownTypes.has(h.type) && typeof h.date==='number')
+      .map(h => ({
+        date: h.date,
+        type: h.type,
+        text: clean(typeof h.text==='string' ? h.text : ''),
+        triggers: Array.isArray(h.triggers) ? h.triggers.filter(t=>typeof t==='string').map(clean) : [],
+        streakLength: typeof h.streakLength==='number' ? h.streakLength : 0,
+        ...(h.type==='checkin' && typeof h.mood==='string' ? {mood: clean(h.mood)} : {})
+      }));
+  }
+  return data;
+}
 function importData(ev){
   const file=ev.target.files[0]; if(!file) return;
   const reader=new FileReader();
   reader.onload=e=>{
     try{
-      const data=JSON.parse(e.target.result);
-      if(typeof data.startDate!=='number' || !Array.isArray(data.history)) throw new Error('bad format');
+      const raw=JSON.parse(e.target.result);
+      if(typeof raw.startDate!=='number' || !Array.isArray(raw.history)) throw new Error('bad format');
+      const data=sanitizeState(raw);
       Store.replaceAll(data);
       toast('Backup restored.');
       go('today');
@@ -795,10 +933,10 @@ window.addEventListener('online', ()=>toast('Back online.'));
 
 /* ---- Init ---- */
 async function init(){
-  load();
+  await load();
   await migrateLegacyPin();
-  buildTags(document.getElementById('triggerTags'), selectedTriggers, {sel:selectedTriggers});
-  buildTags(document.getElementById('logTriggerTags'), selectedLogTriggers, {sel:selectedLogTriggers});
+  buildTags(document.getElementById('triggerTags'), selectedTriggers);
+  buildTags(document.getElementById('logTriggerTags'), selectedLogTriggers);
   const hashView = (location.hash || '').replace('#','');
   const validViews = ['today','sos','log','history','settings'];
   go(validViews.includes(hashView) ? hashView : 'today');
@@ -810,5 +948,43 @@ async function init(){
 init();
 
 if('serviceWorker' in navigator){
-  window.addEventListener('load',()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); });
+  window.addEventListener('load', async ()=>{
+    try{
+      const reg = await navigator.serviceWorker.register('sw.js');
+
+      const promptUpdate = (worker) => {
+        openModal(`
+          <h3>Update available</h3>
+          <p>A newer version of Steady is ready. Your data isn't affected — reload to pick it up.</p>
+          <div class="modal-row">
+            <button class="btn-primary" onclick="applyUpdate()">Reload now</button>
+            <button class="btn-ghost" onclick="closeModal()">Later</button>
+          </div>
+        `);
+        window._pendingWorker = worker;
+      };
+
+      if(reg.waiting) promptUpdate(reg.waiting);
+      reg.addEventListener('updatefound', () => {
+        const installing = reg.installing;
+        if(!installing) return;
+        installing.addEventListener('statechange', () => {
+          if(installing.state==='installed' && navigator.serviceWorker.controller){
+            promptUpdate(installing);
+          }
+        });
+      });
+
+      let reloaded = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if(reloaded) return;
+        reloaded = true;
+        location.reload();
+      });
+    }catch(e){ /* offline-first still works without an active SW */ }
+  });
+}
+function applyUpdate(){
+  if(window._pendingWorker) window._pendingWorker.postMessage('SKIP_WAITING');
+  closeModal();
 }

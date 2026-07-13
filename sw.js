@@ -1,6 +1,6 @@
 // Bump CACHE_VERSION any time index.html, styles.css, or app.js changes —
 // this is what forces installed clients to drop the stale cache and refetch.
-const CACHE_VERSION = "v5";
+const CACHE_VERSION = "v6";
 const CACHE = `steady-${CACHE_VERSION}`;
 const ASSETS = [
   "./",
@@ -17,7 +17,14 @@ const ASSETS = [
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
-  self.skipWaiting();
+  // No self.skipWaiting() here on purpose — the new worker waits until the
+  // page explicitly asks it to take over (see the "Update available" flow
+  // in app.js), so an update never silently swaps content under someone
+  // mid-session.
+});
+
+self.addEventListener("message", (e) => {
+  if (e.data === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("activate", (e) => {
